@@ -1,47 +1,78 @@
+'use client'
+
+import { FormEvent, useState } from 'react'
+import {
+  Archive,
+  ArrowUp,
+  ChevronDown,
+  Menu,
+  Mic,
+  MoreHorizontal,
+  Paperclip,
+  Plus,
+  Sparkles,
+  Sun,
+  UserRound,
+  Volume2,
+} from 'lucide-react'
+
+const starterMessages = [
+  { role: 'assistant', text: "Good morning, Alex. I’m here and listening." },
+  { role: 'user', text: 'Help me shape a clear plan for today.' },
+  { role: 'assistant', text: 'Absolutely. Let’s make space for what matters most.' },
+]
+
 export default function Page() {
+  const [messages, setMessages] = useState(starterMessages)
+  const [draft, setDraft] = useState('')
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const text = draft.trim()
+    if (!text) return
+    setMessages((current) => [...current, { role: 'user', text }])
+    setDraft('')
+  }
+
   return (
-    <main
-      style={{
-        colorScheme: 'light dark',
-        position: 'relative',
-        display: 'flex',
-        minHeight: '100vh',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: 'light-dark(#fff, #000)',
-        color: 'light-dark(#000, #fff)',
-      }}
-    >
-      <svg
-        aria-hidden="true"
-        style={{ width: 80, height: 80 }}
-        width={80}
-        height={80}
-        fill="none"
-        viewBox="0 0 20 20"
-        xmlns="http://www.w3.org/2000/svg"
-        stroke="currentColor"
-        strokeWidth="0.5"
-      >
-        <path
-          d="M14.2 14.2H17V6.9375C17 4.76288 15.2371 3 13.0625 3H5.8V5.8M14.2 14.2V7.79063L7.79062 14.2H14.2ZM14.2 14.2V17H6.9375C4.76288 17 3 15.2371 3 13.0625V5.8H5.8M5.8 5.8V12.2313L12.2313 5.8H5.8Z"
-          strokeLinejoin="round"
-        />
-      </svg>
-      <p
-        style={{
-          position: 'absolute',
-          left: '50%',
-          top: 'calc(50% + 56px)',
-          transform: 'translateX(-50%)',
-          whiteSpace: 'nowrap',
-          fontSize: '14px',
-          fontWeight: 500,
-          color: 'light-dark(#71717a, #a1a1aa)',
-        }}
-      >
-        Your v0 generation will show here.
-      </p>
+    <main className="nexus-shell">
+      <section className="nexus-device" aria-label="Nexus assistant">
+        <header className="nexus-header">
+          <button className="icon-button" aria-label="Open navigation" type="button"><Menu /></button>
+          <div className="brand-lockup"><span className="brand-mark"><Sparkles /></span><span>NEXUS</span></div>
+          <button className="icon-button" aria-label="More options" type="button"><MoreHorizontal /></button>
+        </header>
+
+        <div className="context-strip">
+          <div className="identity-chip"><span className="status-dot" /> Alex Morgan <ChevronDown /></div>
+          <button className="theme-toggle" type="button" aria-label="Switch theme"><Sun /></button>
+        </div>
+
+        <div className="conversation" aria-live="polite">
+          <div className="date-stamp"><span /> TODAY <span /></div>
+          {messages.map((message, index) => (
+            <div className={`message-row ${message.role}`} key={`${message.text}-${index}`}>
+              {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles /></div>}
+              <div className="message-content">
+                <span className="message-label">{message.role === 'assistant' ? 'NEXUS' : 'YOU'}</span>
+                <div className="message-bubble">{message.text}</div>
+                {message.role === 'assistant' && <div className="message-tools"><button type="button" aria-label="Listen to message"><Volume2 /></button><span>just now</span></div>}
+              </div>
+              {message.role === 'user' && <div className="user-avatar"><UserRound /></div>}
+            </div>
+          ))}
+          <div className="empathy-wave" aria-label="Nexus is ready"><span /><span /><span /><span /><span /><span /><span /></div>
+        </div>
+
+        <div className="composer-wrap">
+          <div className="quick-actions"><button type="button" aria-label="Attach file"><Paperclip /></button><button type="button" aria-label="Add context"><Plus /></button><span className="quick-hint">Ask anything</span><button type="button" aria-label="Voice input"><Mic /></button></div>
+          <form className="composer" onSubmit={handleSubmit}>
+            <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="What’s on your mind?" aria-label="Message Nexus" />
+            <button className="action-orb" type="submit" aria-label="Send message"><ArrowUp /></button>
+          </form>
+          <p className="composer-note">Nexus is here to help you think clearly.</p>
+        </div>
+      </section>
     </main>
   )
 }
