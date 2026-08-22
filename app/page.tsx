@@ -1,6 +1,6 @@
 'use client'
 
-import { FormEvent, useEffect, useState } from 'react'
+import { FormEvent, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowUp, Check, ChevronRight, Copy, DollarSign, KeyRound, Menu, MoreHorizontal, Paperclip, Phone, QrCode, Search, Send, Settings, Sparkles, UserRound, Video, Wallet, X } from 'lucide-react'
 
 type Contact = { name: string; alias: string; snippet: string; time: string; online: boolean; emoji: string }
@@ -35,8 +35,26 @@ function Toast({ text }: { text: string }) { return <div className="toast" role=
 
 /* Living avatar — streams a looping muted video or falls back to image / icon */
 function AvatarMedia({ avatar, fallback }: { avatar: Avatar; fallback: React.ReactNode }) {
-  if (avatar?.isVideo) return <video className="avatar-media" src={avatar.url} autoPlay loop muted playsInline />
-  if (avatar) return <img className="avatar-media" src={avatar.url || "/placeholder.svg"} alt="Your profile avatar" />
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  // Reset the failure state whenever the source changes so a new upload can render.
+  useEffect(() => { setFailed(false) }, [avatar?.url])
+
+  // Autoplay can reject (e.g. remount between views). Swallow the rejection so it
+  // never surfaces as an unhandled "{"isTrusted":true}" event.
+  useEffect(() => {
+    if (!avatar?.isVideo || failed) return
+    const node = videoRef.current
+    if (!node) return
+    const play = node.play()
+    if (play && typeof play.catch === 'function') play.catch(() => {})
+  }, [avatar?.isVideo, avatar?.url, failed])
+
+  if (avatar && !failed) {
+    if (avatar.isVideo) return <video ref={videoRef} className="avatar-media" src={avatar.url} loop muted playsInline autoPlay onError={() => setFailed(true)} />
+    return <img className="avatar-media" src={avatar.url || "/placeholder.svg"} alt="Your profile avatar" onError={() => setFailed(true)} />
+  }
   return <>{fallback}</>
 }
 
@@ -68,7 +86,7 @@ function Gateway({ onEnter }: { onEnter: () => void }) {
 
 function ProfileDrawer({ avatar, setAvatar, onClose, onToast }: { avatar: Avatar; setAvatar: (value: Avatar) => void; onClose: () => void; onToast: (text: string) => void }) {
   const wallet = '0x7a9C...4F2B';
-  function upload(event: React.ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (file) { const isVideo = file.type.startsWith('video/'); setAvatar({ url: URL.createObjectURL(file), isVideo }); onToast(isVideo ? 'Living video avatar is live' : 'Avatar updated') } }
+  function upload(event: React.ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (file) { const isVideo = file.type.startsWith('video/'); setAvatar((prev) => { if (prev?.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url); return { url: URL.createObjectURL(file), isVideo } }); onToast(isVideo ? 'Living video avatar is live' : 'Avatar updated') } }
   async function copyAddress() { await navigator.clipboard?.writeText('0x7a9C91eA2d7F8B2c4F2B'); onToast('Wallet address copied') }
   return <div className="drawer-backdrop" onClick={onClose}><aside className="profile-drawer" onClick={(e) => e.stopPropagation()}><header className="drawer-header"><div><span className="eyebrow">NEXUS / PROFILE</span><h2>Your space</h2></div><Tap className="nav-icon" onClick={onClose} aria-label="Close profile menu"><X /></Tap></header><label className="avatar-upload"><input type="file" accept="image/*,video/*" onChange={upload} /><AvatarMedia avatar={avatar} fallback={<UserRound />} /><span>{avatar?.isVideo ? 'Change video · live' : 'Change avatar'}</span></label><section className="wallet-card"><div className="wallet-title"><Wallet /><span>NEXUS CRYPTO WALLET</span><small>LIVE</small></div><strong>$1,250.00</strong><p>0.5 ETH · available balance</p><div className="wallet-address"><code>{wallet}</code><Tap onClick={copyAddress} aria-label="Copy wallet address"><Copy /></Tap></div><div className="wallet-actions"><Tap onClick={() => onToast('Send flow ready')}><Send /> Send</Tap><Tap onClick={() => onToast('Receive address ready')}><QrCode /> Receive</Tap><Tap onClick={() => onToast('Swap flow ready')}><Sparkles /> Swap</Tap></div></section><section className="drawer-links"><Tap onClick={() => onToast('Privacy center opened')}><KeyRound /><span><b>Privacy center</b><small>Identity capsule and encryption</small></span><ChevronRight /></Tap><Tap onClick={() => onToast('Notifications are enabled')}><Sparkles /><span><b>Notifications</b><small>Quiet hours and mentions</small></span><ChevronRight /></Tap><Tap onClick={() => onToast('Settings saved locally')}><Settings /><span><b>Preferences</b><small>Appearance and language</small></span><ChevronRight /></Tap></section></aside></div>
 }
