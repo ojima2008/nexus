@@ -355,3 +355,22 @@ button { cursor: pointer; }
 .call-round:active { transform:scale(.9); }
 .call-round.muted { color:#ff9db3; border-color:rgba(255,107,139,.5); background:rgba(255,107,139,.14); }
 .call-round.end { color:#fff; background:#ef4d6b; box-shadow:0 12px 30px rgba(239,77,107,.5); }
+
+/* Live grid states */
+.app-canvas.boot { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; gap:8px; }
+.boot-note { color:var(--ink-soft); font-size:11px; letter-spacing:.06em; }
+.ghost-action { display:flex; align-items:center; justify-content:center; width:min(100%,330px); margin-top:12px; padding:13px 16px; border:1px solid var(--line); border-radius:16px; color:var(--ink-soft); background:transparent; font-size:11px; }
+.ghost-action:hover { color:#fff; border-color:rgba(168,148,255,.4); }
+.form-error { margin:14px 0 0; padding:11px 13px; border:1px solid rgba(255,120,120,.3); border-radius:13px; color:#ff9d9d; background:rgba(255,90,90,.08); font-size:11px; line-height:1.5; }
+.identity-card .primary-action { margin-top:16px; width:100%; }
+.identity-card .ghost-action { width:100%; }
+.handle-input b { display:grid; place-items:center; color:var(--violet); }
+.handle-input b svg { width:14px; }
+.empty-grid, .empty-room { margin:18px 2px; color:var(--ink-soft); font-size:12px; line-height:1.7; }
+.empty-room { text-align:center; }
+.thread-meta { display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
+.thread-unread { display:grid; place-items:center; min-width:19px; height:19px; padding:0 5px; border-radius:999px; color:#fff; background:var(--violet); font-size:9px; font-style:normal; font-weight:700; box-shadow:0 4px 14px rgba(168,148,255,.4); }
+.directory-qr { padding-top:27px; }
+.story-add { position:absolute; right:-3px; bottom:-3px; display:grid; place-items:center; width:19px; height:19px; border:2px solid #000; border-radius:50%; color:#fff; background:var(--violet); font-size:11px; font-style:normal; line-height:1; }
+.story-avatar.add { position:relative; }
+.scan-overlay .search-bar { width:min(100%,300px); }

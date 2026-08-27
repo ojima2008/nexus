@@ -1,42 +1,21 @@
 'use client'
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, ArrowUp, Camera, Check, ChevronRight, Copy, DollarSign, Eye, KeyRound, Menu, Mic, MicOff, MoreHorizontal, Paperclip, Phone, PhoneOff, Plus, QrCode, Radio, Search, Send, Settings, Smile, Sparkles, Type, UserRound, Video, Wallet, X } from 'lucide-react'
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, ArrowUp, Camera, Check, ChevronRight, Copy, DollarSign, Eye, KeyRound, LogOut, Menu, Mic, MicOff, MoreHorizontal, Paperclip, Phone, PhoneOff, QrCode, Radio, Search, Send, Settings, Smile, Sparkles, Type, UserRound, Video, Wallet, X } from 'lucide-react'
+import { createClient } from '@/lib/supabase/client'
 
 type Status = { kind: 'text' | 'video' | 'audio' | 'image'; text?: string; mediaUrl?: string }
 type Contact = { id: string; name: string; alias: string; snippet: string; time: string; online: boolean; emoji: string; status?: Status }
-type View = 'ONBOARDING' | 'CHAT_LIST' | 'ACTIVE_CHAT' | 'PROFILE_MENU'
+type View = 'CHAT_LIST' | 'ACTIVE_CHAT' | 'PROFILE_MENU'
 type Avatar = { url: string; isVideo: boolean } | null
 type StatusOverlay = { mode: 'broadcast' } | { mode: 'player'; contact: Contact } | null
 type CallMode = 'video' | 'audio' | 'emoji'
 type CallSession = { contact: Contact; mode: CallMode } | null
-type Message =
-  | { id: number; mine: boolean; kind: 'text'; text: string; time: string }
-  | { id: number; mine: boolean; kind: 'payment'; amount: number; time: string }
+type Me = { id: string; handle: string; displayName: string; wallet: string }
+type Row = Record<string, any>
+type Msg = { id: string; senderId: string; recipientId: string; kind: 'text' | 'payment' | 'emoji'; body: string; amount: number | null; createdAt: string }
 
-const initialContacts: Contact[] = [
-  { id: 'morgan', name: 'Morgan Lee', alias: '@morgan', snippet: 'The violet room is ready.', time: '09:42', online: true, emoji: 'M', status: { kind: 'text', text: 'In the violet room, thinking in low light.' } },
-  { id: 'sage', name: 'Sage Chen', alias: '@sage', snippet: 'Sending you the notes now.', time: 'Yesterday', online: true, emoji: 'S', status: { kind: 'audio', text: 'Ambient loop · rain on glass' } },
-  { id: 'riley', name: 'Riley Park', alias: '@riley', snippet: 'That sounds like a plan.', time: 'Tue', online: false, emoji: 'R' },
-  { id: 'noah', name: 'Noah Williams', alias: '@noah', snippet: 'Let’s talk after sunset.', time: 'Mon', online: true, emoji: 'N', status: { kind: 'text', text: 'Chasing the last of the light.' } },
-]
-const friendPool = [
-  { name: 'Ava Stone', alias: '@ava', snippet: 'Key linked · say hello', emoji: 'A' },
-  { name: 'Theo Marsh', alias: '@theo', snippet: 'Connected through your Nexus key', emoji: 'T' },
-  { name: 'Iris Vale', alias: '@iris', snippet: 'New encrypted channel open', emoji: 'I' },
-  { name: 'Leo Kane', alias: '@leo', snippet: 'Verified friend key', emoji: 'L' },
-]
 const seed = ['velvet','orbit','cinder','lumen','quiet','violet','harbor','north','echo','silver','morrow','atlas']
-const dialCodes = [
-  { code: '+1', label: 'US' },
-  { code: '+44', label: 'UK' },
-  { code: '+91', label: 'IN' },
-  { code: '+234', label: 'NG' },
-  { code: '+81', label: 'JP' },
-  { code: '+49', label: 'DE' },
-  { code: '+61', label: 'AU' },
-  { code: '+55', label: 'BR' },
-]
 type Mood = 'cool' | 'love' | 'shock'
 const emojiPalette: { char: string; label: string; mood: Mood }[] = [
   { char: '😎', label: "I'm Good", mood: 'cool' },
@@ -51,6 +30,20 @@ const moodVoice: Record<Mood, string> = { cool: "Vocalizing Mood: I'm Good", lov
 function Mark() { return <span className="brand-mark"><Sparkles /></span> }
 function Tap({ className = '', ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) { return <button className={`tap ${className}`} {...props} /> }
 function Toast({ text }: { text: string }) { return <div className="toast" role="status"><Check /> {text}</div> }
+
+function clock(iso: string) {
+  const d = new Date(iso)
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+function relative(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime()
+  if (diff < 60_000) return 'now'
+  if (diff < 86_400_000) return clock(iso)
+  if (diff < 172_800_000) return 'Yesterday'
+  return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' })
+}
+function initial(text: string) { return (text.replace(/^@/, '')[0] || 'N').toUpperCase() }
+function cleanHandle(value: string) { return value.trim().replace(/^@/, '').toLowerCase().replace(/[^a-z0-9._]/g, '') }
 
 /* Short synthesized "mood" audio burst via the Web Audio API — real, and fully guarded. */
 function playTone(mood: Mood) {
@@ -120,82 +113,241 @@ function QrCanvas({ seedStr }: { seedStr: string }) {
   )
 }
 
-/* Pillar 1 — spatial QR gateway + simulated scan viewport */
-function QrPanel({ variant = 'full', onAddFriend }: { variant?: 'full' | 'compact'; onAddFriend: () => void }) {
-  const [scanning, setScanning] = useState(false)
-  const [status, setStatus] = useState('')
-  const timers = useRef<number[]>([])
-  useEffect(() => () => { timers.current.forEach((t) => window.clearTimeout(t)) }, [])
-  function scan() {
-    setScanning(true); setStatus('Searching for a friend key…')
-    timers.current.push(window.setTimeout(() => setStatus('Key found · verifying signature'), 1150))
-    timers.current.push(window.setTimeout(() => { setScanning(false); setStatus(''); onAddFriend() }, 2150))
+/* Pillar 1 — spatial key gateway. Linking a friend resolves a real handle on the grid. */
+function QrPanel({ variant = 'full', myHandle, onLink, linking }: { variant?: 'full' | 'compact'; myHandle: string; onLink?: (handle: string) => Promise<void> | void; linking?: boolean }) {
+  const [open, setOpen] = useState(false)
+  const [value, setValue] = useState('')
+  const key = `nexus://key/${myHandle || 'unclaimed'}`
+  async function link(e: FormEvent) {
+    e.preventDefault()
+    const h = cleanHandle(value)
+    if (!h || !onLink) return
+    await onLink(h)
+    setValue(''); setOpen(false)
   }
   return (
     <div className={`qr-panel ${variant}`}>
       <div className="qr-frame">
         <span className="qr-grid-lines" aria-hidden />
-        <QrCanvas seedStr="nexus://key/0x7a9C91eA2d7F8B2c4F2B" />
+        <QrCanvas seedStr={key} />
         <span className="qr-pulse" aria-hidden />
       </div>
-      <div className="qr-meta"><b>Your Nexus Key</b><small>Let a friend scan this to connect instantly</small></div>
-      <Tap className="qr-scan-btn" onClick={scan}><Camera /> Scan Friend&apos;s Key</Tap>
-      {scanning && (
-        <div className="scan-overlay" role="dialog" aria-label="Scanning for a friend key">
+      <div className="qr-meta"><b>{myHandle ? `@${myHandle}` : 'Your Nexus Key'}</b><small>Share this key so a friend can link you instantly</small></div>
+      {onLink && <Tap className="qr-scan-btn" onClick={() => setOpen(true)}><Camera /> Link a Friend&apos;s Key</Tap>}
+      {open && (
+        <div className="scan-overlay" role="dialog" aria-label="Link a friend key">
           <div className="scan-viewport">
             <span className="scan-line" aria-hidden />
             <span className="scan-corner tl" aria-hidden /><span className="scan-corner tr" aria-hidden />
             <span className="scan-corner bl" aria-hidden /><span className="scan-corner br" aria-hidden />
             <QrCode className="scan-ghost" aria-hidden />
           </div>
-          <p>{status}</p>
-          <Tap className="scan-cancel" onClick={() => { setScanning(false); setStatus('') }}>Cancel</Tap>
+          <form onSubmit={link} style={{ display: 'contents' }}>
+            <p>Type your friend&apos;s handle to complete the key exchange</p>
+            <div className="search-bar grid-search" style={{ margin: 0 }}>
+              <Search />
+              <input value={value} onChange={(e) => setValue(e.target.value.replace(/^@/, ''))} placeholder="friend.handle" autoCapitalize="none" autoCorrect="off" spellCheck={false} autoFocus />
+              {value.trim() && <button type="submit" className="grid-send" aria-label="Complete key exchange">{linking ? <span className="spinner" /> : <ArrowUp />}</button>}
+            </div>
+          </form>
+          <Tap className="scan-cancel" onClick={() => { setOpen(false); setValue('') }}>Cancel</Tap>
         </div>
       )}
     </div>
   )
 }
 
-function Gateway({ handle, setHandle, onEnter, onAddFriend }: { handle: string; setHandle: (value: string) => void; onEnter: () => void; onAddFriend: () => void }) {
-  const [loading, setLoading] = useState(false); const [generated, setGenerated] = useState(false); const [revealed, setRevealed] = useState(false)
-  const [linkPhone, setLinkPhone] = useState(false); const [dial, setDial] = useState('+1'); const [phone, setPhone] = useState('')
-  function generate() { setLoading(true); window.setTimeout(() => { setLoading(false); setGenerated(true) }, 1500) }
-  return <main className="gateway"><div className="gateway-art"><div className="gateway-ring" /><div className="gateway-mark"><Mark /></div></div><span className="eyebrow">PRIVATE MESSENGER / 01</span><h1>Find your people.<br /><em>Keep your space.</em></h1><p className="gateway-copy">Nexus is a quiet, cryptographic room for the people who matter. No feeds. No noise. Just presence.</p>{!generated ? <Tap className="primary-action" onClick={generate} disabled={loading}>{loading ? <span className="spinner" /> : <KeyRound />} {loading ? 'Generating local identity...' : 'Generate cryptographic profile identity'} <ChevronRight /></Tap> : <div className="identity-card"><label className="handle-field"><span>CLAIM YOUR NEXUS HANDLE</span><div className="handle-input"><b>@</b><input value={handle} onChange={(e) => setHandle(e.target.value.toLowerCase().replace(/[^a-z0-9._]/g, ''))} maxLength={24} placeholder="samuel.nexus" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></div><small>{handle ? `Beta friends can reach you at @${handle}` : 'Alphanumeric · lowercase · dots allowed'}</small></label><div className="identity-card-head"><span>YOUR PRIVATE SEED</span><Tap onClick={() => setRevealed(!revealed)}>{revealed ? 'Mask' : 'Reveal'}</Tap></div><div className="seed-words">{seed.map((word, i) => <span key={word}>{revealed ? `${i + 1}. ${word}` : `${String(i + 1).padStart(2,'0')} •••••`}</span>)}</div>
-    <div className="recovery-slot">
-      <button type="button" className={`recovery-toggle ${linkPhone ? 'on' : ''}`} onClick={() => setLinkPhone(!linkPhone)} aria-pressed={linkPhone}>
-        <span className="recovery-copy"><b>Link Phone Number for Recovery</b><small>Optional · stay 100% anonymous, or add a fallback</small></span>
-        <span className="recovery-switch"><i /></span>
-      </button>
-      <div className={`recovery-field ${linkPhone ? 'open' : ''}`}>
-        <div className="recovery-input">
-          <div className="dial-picker">
-            <select value={dial} onChange={(e) => setDial(e.target.value)} aria-label="Country code">
-              {dialCodes.map((d) => <option key={d.code} value={d.code}>{d.label} {d.code}</option>)}
-            </select>
-            <ChevronRight />
-          </div>
-          <input value={phone} onChange={(e) => setPhone(e.target.value.replace(/[^\d\s-]/g, ''))} inputMode="tel" placeholder="Phone number" />
-        </div>
-        <small className="recovery-note">Never shared. Used only to restore your seed if this device is lost.</small>
-      </div>
-    </div>
-    <div className="gateway-qr-slot"><span className="slot-label">SPATIAL KEY EXCHANGE</span><QrPanel variant="compact" onAddFriend={onAddFriend} /></div>
-    <Tap className="primary-action" onClick={onEnter} disabled={!handle.trim()}>{handle.trim() ? 'Enter Nexus Network' : 'Claim a handle to continue'} <ArrowUp /></Tap></div>}<small className="gateway-note">Your identity is generated on-device and never stored by Nexus.</small></main>
+/* Real cryptographic-feeling onboarding backed by Supabase auth. */
+function Gateway() {
+  const supabase = useMemo(() => createClient(), [])
+  const [mode, setMode] = useState<'new' | 'return'>('new')
+  const [generated, setGenerated] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [revealed, setRevealed] = useState(false)
+  const [handle, setHandle] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+
+  function generate() { setLoading(true); window.setTimeout(() => { setLoading(false); setGenerated(true) }, 1400) }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    setError(''); setBusy(true)
+    try {
+      if (mode === 'new') {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ handle: cleanHandle(handle), email, password }),
+        })
+        const json = await res.json()
+        if (!res.ok) { setError(json.error ?? 'Could not forge that identity.'); setBusy(false); return }
+      }
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password })
+      if (signInError) {
+        setError(/confirm/i.test(signInError.message) ? signInError.message : 'Invalid email or passphrase.')
+        setBusy(false)
+      }
+    } catch {
+      setError('The grid is unreachable. Try again.')
+      setBusy(false)
+    }
+  }
+
+  const showForm = mode === 'return' || generated
+
+  return (
+    <main className="gateway">
+      <div className="gateway-art"><div className="gateway-ring" /><div className="gateway-mark"><Mark /></div></div>
+      <span className="eyebrow">PRIVATE MESSENGER / 01</span>
+      <h1>Find your people.<br /><em>Keep your space.</em></h1>
+      <p className="gateway-copy">Nexus is a quiet, cryptographic room for the people who matter. No feeds. No noise. Just presence.</p>
+
+      {!showForm ? (
+        <>
+          <Tap className="primary-action" onClick={generate} disabled={loading}>
+            {loading ? <span className="spinner" /> : <KeyRound />} {loading ? 'Generating local identity...' : 'Generate cryptographic profile identity'} <ChevronRight />
+          </Tap>
+          <Tap className="ghost-action" onClick={() => setMode('return')}>I already have a Nexus identity</Tap>
+        </>
+      ) : (
+        <form className="identity-card" onSubmit={submit}>
+          {mode === 'new' && (
+            <label className="handle-field">
+              <span>CLAIM YOUR NEXUS HANDLE</span>
+              <div className="handle-input"><b>@</b>
+                <input value={handle} onChange={(e) => setHandle(cleanHandle(e.target.value))} maxLength={24} placeholder="samuel.nexus" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+              </div>
+              <small>{handle ? `Friends can reach you at @${handle}` : 'Alphanumeric · lowercase · dots allowed'}</small>
+            </label>
+          )}
+
+          <label className="handle-field">
+            <span>RECOVERY EMAIL</span>
+            <div className="handle-input"><b>@</b>
+              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" inputMode="email" placeholder="you@mail.com" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+            </div>
+            <small>Never shown to anyone. Used only to restore your identity.</small>
+          </label>
+
+          <label className="handle-field">
+            <span>PASSPHRASE</span>
+            <div className="handle-input"><b><KeyRound /></b>
+              <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="8+ characters" autoComplete={mode === 'new' ? 'new-password' : 'current-password'} />
+            </div>
+            <small>Unlocks your identity capsule on any device.</small>
+          </label>
+
+          {mode === 'new' && (
+            <>
+              <div className="identity-card-head"><span>YOUR PRIVATE SEED</span><Tap type="button" onClick={() => setRevealed(!revealed)}>{revealed ? 'Mask' : 'Reveal'}</Tap></div>
+              <div className="seed-words">{seed.map((word, i) => <span key={word}>{revealed ? `${i + 1}. ${word}` : `${String(i + 1).padStart(2,'0')} •••••`}</span>)}</div>
+            </>
+          )}
+
+          {error && <p className="form-error" role="alert">{error}</p>}
+
+          <Tap className="primary-action" type="submit" disabled={busy || (mode === 'new' && !handle.trim())}>
+            {busy ? <span className="spinner" /> : null}
+            {busy ? 'Opening the grid…' : mode === 'new' ? 'Enter Nexus Network' : 'Unlock my identity'} <ArrowUp />
+          </Tap>
+          <Tap className="ghost-action" type="button" onClick={() => { setMode(mode === 'new' ? 'return' : 'new'); setError('') }}>
+            {mode === 'new' ? 'I already have a Nexus identity' : 'Forge a new identity instead'}
+          </Tap>
+        </form>
+      )}
+      <small className="gateway-note">Messages are keyed to your identity and only readable by you and your peer.</small>
+    </main>
+  )
 }
 
-function ProfileDrawer({ avatar, setAvatar, onClose, onToast, onAddFriend }: { avatar: Avatar; setAvatar: (value: Avatar | ((prev: Avatar) => Avatar)) => void; onClose: () => void; onToast: (text: string) => void; onAddFriend: () => void }) {
-  const wallet = '0x7a9C...4F2B';
+function ProfileDrawer({ me, avatar, setAvatar, onClose, onToast, onLink, onSignOut }: { me: Me; avatar: Avatar; setAvatar: (value: Avatar | ((prev: Avatar) => Avatar)) => void; onClose: () => void; onToast: (text: string) => void; onLink: (handle: string) => Promise<void>; onSignOut: () => void }) {
+  const short = `${me.wallet.slice(0, 6)}...${me.wallet.slice(-4)}`
   function upload(event: React.ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (file) { const isVideo = file.type.startsWith('video/'); setAvatar((prev) => { if (prev?.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url); return { url: URL.createObjectURL(file), isVideo } }); onToast(isVideo ? 'Living video avatar is live' : 'Avatar updated') } }
-  async function copyAddress() { await navigator.clipboard?.writeText('0x7a9C91eA2d7F8B2c4F2B'); onToast('Wallet address copied') }
-  return <div className="drawer-backdrop" onClick={onClose}><aside className="profile-drawer" onClick={(e) => e.stopPropagation()}><header className="drawer-header"><div><span className="eyebrow">NEXUS / PROFILE</span><h2>Your space</h2></div><Tap className="nav-icon" onClick={onClose} aria-label="Close profile menu"><X /></Tap></header><label className="avatar-upload"><input type="file" accept="image/*,video/*" onChange={upload} /><AvatarMedia avatar={avatar} fallback={<UserRound />} /><span>{avatar?.isVideo ? 'Change video · live' : 'Change avatar'}</span></label><section className="wallet-card"><div className="wallet-title"><Wallet /><span>NEXUS CRYPTO WALLET</span><small>LIVE</small></div><strong>$1,250.00</strong><p>0.5 ETH · available balance</p><div className="wallet-address"><code>{wallet}</code><Tap onClick={copyAddress} aria-label="Copy wallet address"><Copy /></Tap></div><div className="wallet-actions"><Tap onClick={() => onToast('Send flow ready')}><Send /> Send</Tap><Tap onClick={() => onToast('Receive address ready')}><QrCode /> Receive</Tap><Tap onClick={() => onToast('Swap flow ready')}><Sparkles /> Swap</Tap></div></section><section className="wallet-qr"><div className="section-label"><span>Key Exchange</span><span className="muted">Live QR</span></div><QrPanel variant="compact" onAddFriend={onAddFriend} /></section><section className="drawer-links"><Tap onClick={() => onToast('Privacy center opened')}><KeyRound /><span><b>Privacy center</b><small>Identity capsule and encryption</small></span><ChevronRight /></Tap><Tap onClick={() => onToast('Notifications are enabled')}><Sparkles /><span><b>Notifications</b><small>Quiet hours and mentions</small></span><ChevronRight /></Tap><Tap onClick={() => onToast('Settings saved locally')}><Settings /><span><b>Preferences</b><small>Appearance and language</small></span><ChevronRight /></Tap></section></aside></div>
+  async function copyAddress() { await navigator.clipboard?.writeText(me.wallet); onToast('Wallet address copied') }
+  return <div className="drawer-backdrop" onClick={onClose}><aside className="profile-drawer" onClick={(e) => e.stopPropagation()}><header className="drawer-header"><div><span className="eyebrow">NEXUS / PROFILE</span><h2>@{me.handle}</h2></div><Tap className="nav-icon" onClick={onClose} aria-label="Close profile menu"><X /></Tap></header><label className="avatar-upload"><input type="file" accept="image/*,video/*" onChange={upload} /><AvatarMedia avatar={avatar} fallback={<UserRound />} /><span>{avatar?.isVideo ? 'Change video · live' : 'Change avatar'}</span></label><section className="wallet-card"><div className="wallet-title"><Wallet /><span>NEXUS CRYPTO WALLET</span><small>LIVE</small></div><strong>$1,250.00</strong><p>0.5 ETH · available balance</p><div className="wallet-address"><code>{short}</code><Tap onClick={copyAddress} aria-label="Copy wallet address"><Copy /></Tap></div><div className="wallet-actions"><Tap onClick={() => onToast('Send flow ready')}><Send /> Send</Tap><Tap onClick={() => onToast('Receive address ready')}><QrCode /> Receive</Tap><Tap onClick={() => onToast('Swap flow ready')}><Sparkles /> Swap</Tap></div></section><section className="wallet-qr"><div className="section-label"><span>Key Exchange</span><span className="muted">Live QR</span></div><QrPanel variant="compact" myHandle={me.handle} onLink={onLink} /></section><section className="drawer-links"><Tap onClick={() => onToast('Privacy center opened')}><KeyRound /><span><b>Privacy center</b><small>Identity capsule and encryption</small></span><ChevronRight /></Tap><Tap onClick={() => onToast('Notifications are enabled')}><Sparkles /><span><b>Notifications</b><small>Quiet hours and mentions</small></span><ChevronRight /></Tap><Tap onClick={() => onToast('Settings saved locally')}><Settings /><span><b>Preferences</b><small>Appearance and language</small></span><ChevronRight /></Tap><Tap onClick={onSignOut}><LogOut /><span><b>Seal this device</b><small>Sign out of Nexus</small></span><ChevronRight /></Tap></section></aside></div>
 }
 
-function Directory({ avatar, contacts, freshId, myStatus, discovering, onSelect, onProfile, onBroadcast, onOpenStatus, onOpenMyStatus, onDiscover, onQuickStatus }: { avatar: Avatar; contacts: Contact[]; freshId: string | null; myStatus: Status | null; discovering: string | null; onSelect: (contact: Contact) => void; onProfile: () => void; onBroadcast: () => void; onOpenStatus: (contact: Contact) => void; onOpenMyStatus: () => void; onDiscover: (query: string) => void; onQuickStatus: (file: File) => void }) {
+function Directory({ me, avatar, contacts, freshId, myStatus, discovering, unread, onSelect, onProfile, onBroadcast, onOpenStatus, onOpenMyStatus, onDiscover, onQuickStatus, onLink }: { me: Me; avatar: Avatar; contacts: Contact[]; freshId: string | null; myStatus: Status | null; discovering: string | null; unread: Record<string, number>; onSelect: (contact: Contact) => void; onProfile: () => void; onBroadcast: () => void; onOpenStatus: (contact: Contact) => void; onOpenMyStatus: () => void; onDiscover: (query: string) => void; onQuickStatus: (file: File) => void; onLink: (handle: string) => Promise<void> }) {
   const withStatus = contacts.filter((c) => c.status)
   const [query, setQuery] = useState('')
   function submitDiscover(e: FormEvent) { e.preventDefault(); const q = query.trim(); if (!q || discovering) return; onDiscover(q); setQuery('') }
   function pickQuickStatus(e: React.ChangeEvent<HTMLInputElement>) { const f = e.target.files?.[0]; if (f) onQuickStatus(f); e.target.value = '' }
-  return <main className="messenger-shell"><header className="messenger-header"><Tap className="nav-icon" aria-label="Open menu"><Menu /></Tap><div className="brand-lockup"><Mark /><b>NEXUS</b></div><div className="header-actions"><Tap className="nav-icon" aria-label="More options"><MoreHorizontal /></Tap><Tap className="nav-icon profile-button avatar-slot" onClick={onProfile} aria-label="Open profile wallet"><AvatarMedia avatar={avatar} fallback={<UserRound />} /></Tap></div></header><div className="directory-head"><div><span className="eyebrow">PRIVATE NETWORK</span><h1>Your people<span>.</span></h1></div><Tap className={`profile-orb avatar-slot ${myStatus ? 'status-ring' : ''}`} onClick={onBroadcast} aria-label="Broadcast your living status sphere"><AvatarMedia avatar={avatar} fallback={<UserRound />} /></Tap></div><form className="search-bar grid-search" onSubmit={submitDiscover}><Search /><input value={query} onChange={(e) => setQuery(e.target.value.replace(/^@/, ''))} placeholder="Scan the Global Grid for User Handles..." autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="search" aria-label="Search the global grid for a user handle" />{query.trim() && <button type="submit" className="grid-send" aria-label="Send handshake signal">{discovering ? <span className="spinner" /> : <ArrowUp />}</button>}</form><section className="stories"><div className="section-label"><span>Living Status</span><Tap onClick={onBroadcast}>Broadcast</Tap></div><div className="story-row">{myStatus ? <Tap className="story" onClick={onOpenMyStatus}><span className="story-avatar sphere-avatar avatar-slot status-ring live-ring">{myStatus.kind === 'video' && myStatus.mediaUrl ? <video className="avatar-media" src={myStatus.mediaUrl} muted loop playsInline autoPlay /> : myStatus.kind === 'image' && myStatus.mediaUrl ? <img className="avatar-media" src={myStatus.mediaUrl} alt="Your living status" /> : <AvatarMedia avatar={avatar} fallback={<UserRound />} />}</span><small>Your status</small></Tap> : <label className="story quick-status-add"><input type="file" accept="video/*,image/*" onChange={pickQuickStatus} /><span className="story-avatar sphere-avatar avatar-slot story-idle"><AvatarMedia avatar={avatar} fallback={<Plus />} /></span><small>+ Add My Sphere</small></label>}{withStatus.map((contact) => <Tap className="story" key={contact.id} onClick={() => onOpenStatus(contact)}><span className="story-avatar sphere-avatar status-ring">{contact.emoji}</span><small>{contact.name.split(' ')[0]}</small></Tap>)}</div></section><section className="contacts"><div className="section-label"><span>Conversations</span><span className="muted">{contacts.length} people</span></div>{contacts.map((contact) => <Tap className={`contact-row ${freshId === contact.id ? 'contact-fresh' : ''}`} key={contact.id} onClick={() => onSelect(contact)}><span className={`contact-avatar ${contact.online ? 'online' : ''} ${contact.status ? 'status-ring' : ''}`}>{contact.emoji}</span><span className="contact-copy"><b>{contact.name}</b><small>{contact.alias} · {contact.snippet}</small></span><span className="contact-meta"><small>{contact.time}</small><ChevronRight /></span></Tap>)}</section><footer className="network-footer"><span className="online-dot" /> Encrypted network <span>·</span> 12 peers online</footer>{discovering && <div className="handshake-overlay" role="status" aria-live="polite"><div className="handshake-ring"><span className="hs-orbit" aria-hidden /><span className="hs-core"><KeyRound /></span></div><b>Handshake Signal · Key Send</b><small>Locating <em>@{discovering}</em> on the global grid…</small></div>}</main>
+  return (
+    <main className="messenger-shell">
+      <header className="messenger-header">
+        <Tap className="nav-icon" aria-label="Open menu"><Menu /></Tap>
+        <div className="brand-lockup"><Mark /><b>NEXUS</b></div>
+        <div className="header-actions">
+          <Tap className="nav-icon" aria-label="More options"><MoreHorizontal /></Tap>
+          <Tap className="nav-icon profile-button avatar-slot" onClick={onProfile} aria-label="Open profile wallet"><AvatarMedia avatar={avatar} fallback={<UserRound />} /></Tap>
+        </div>
+      </header>
+
+      <div className="directory-head">
+        <div><span className="eyebrow">PRIVATE NETWORK · @{me.handle}</span><h1>Your people<span>.</span></h1></div>
+        <Tap className={`profile-orb avatar-slot ${myStatus ? 'status-ring' : ''}`} onClick={onBroadcast} aria-label="Broadcast your living status sphere"><AvatarMedia avatar={avatar} fallback={<UserRound />} /></Tap>
+      </div>
+
+      <form className="search-bar grid-search" onSubmit={submitDiscover}>
+        <Search />
+        <input value={query} onChange={(e) => setQuery(e.target.value.replace(/^@/, ''))} placeholder="Scan the Global Grid for User Handles..." autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="search" aria-label="Search the global grid for a user handle" />
+        {query.trim() && <button type="submit" className="grid-send" aria-label="Send handshake signal">{discovering ? <span className="spinner" /> : <ArrowUp />}</button>}
+      </form>
+
+      <section className="stories">
+        <div className="section-label"><span>Living Status</span><Tap onClick={onBroadcast}>Broadcast</Tap></div>
+        <div className="story-row">
+          {myStatus ? (
+            <Tap className="story" onClick={onOpenMyStatus}>
+              <span className="story-avatar sphere-avatar avatar-slot status-ring live-ring">
+                {myStatus.kind === 'video' && myStatus.mediaUrl ? <video className="avatar-media" src={myStatus.mediaUrl} muted loop playsInline autoPlay />
+                  : myStatus.kind === 'image' && myStatus.mediaUrl ? <img className="avatar-media" src={myStatus.mediaUrl || "/placeholder.svg"} alt="Your living status" />
+                  : <AvatarMedia avatar={avatar} fallback={<UserRound />} />}
+              </span>
+              <small>You</small>
+            </Tap>
+          ) : (
+            <label className="story">
+              <input type="file" accept="image/*,video/*" onChange={pickQuickStatus} hidden />
+              <span className="story-avatar sphere-avatar avatar-slot add"><AvatarMedia avatar={avatar} fallback={<UserRound />} /><i className="story-add">+</i></span>
+              <small>Add</small>
+            </label>
+          )}
+          {withStatus.map((c) => (
+            <Tap className="story" key={c.id} onClick={() => onOpenStatus(c)}>
+              <span className="story-avatar sphere-avatar status-ring">{c.emoji}</span>
+              <small>{c.alias}</small>
+            </Tap>
+          ))}
+        </div>
+      </section>
+
+      <section className="thread-list">
+        {contacts.length === 0 && <p className="empty-grid">Nobody here yet. Scan the Global Grid above for a friend&apos;s handle, or share your key so they can link you.</p>}
+        {contacts.map((c) => (
+          <Tap className={`thread ${freshId === c.id ? 'fresh' : ''}`} key={c.id} onClick={() => onSelect(c)}>
+            <span className={`thread-avatar ${c.online ? 'online' : ''} ${c.status ? 'status-ring' : ''}`}>{c.emoji}</span>
+            <span className="thread-body">
+              <b>{c.name}{c.alias !== `@${c.name}` && c.name !== c.alias.slice(1) ? <small>{c.alias}</small> : null}</b>
+              <small>{c.snippet}</small>
+            </span>
+            <span className="thread-meta">
+              <small>{c.time}</small>
+              {unread[c.id] ? <i className="thread-unread">{unread[c.id]}</i> : null}
+            </span>
+          </Tap>
+        ))}
+      </section>
+
+      <section className="wallet-qr directory-qr">
+        <div className="section-label"><span>Spatial Key Exchange</span><span className="muted">@{me.handle}</span></div>
+        <QrPanel variant="compact" myHandle={me.handle} onLink={onLink} linking={!!discovering} />
+      </section>
+    </main>
+  )
 }
 
 /* Pillar 3 — floating organic status sphere player with swipe-down close */
@@ -229,7 +381,7 @@ function StatusSphere({ subject, onClose }: { subject: Contact; onClose: () => v
           {status.kind === 'video' && status.mediaUrl
             ? <video className="sphere-media" src={status.mediaUrl} loop muted playsInline autoPlay />
             : status.kind === 'image' && status.mediaUrl
-              ? <img className="sphere-media" src={status.mediaUrl} alt={`${subject.name} living status`} />
+              ? <img className="sphere-media" src={status.mediaUrl || "/placeholder.svg"} alt={`${subject.name} living status`} />
               : status.kind === 'audio' && status.mediaUrl
                 ? <><span className="sphere-orb-mark">{subject.emoji}</span><audio src={status.mediaUrl} loop autoPlay /></>
                 : <span className="sphere-orb-mark">{status.kind === 'audio' ? <Radio /> : subject.emoji}</span>}
@@ -249,8 +401,7 @@ function BroadcastOverlay({ current, onSave, onClose, onToast }: { current: Stat
   const [mediaUrl, setMediaUrl] = useState(current?.mediaUrl ?? '')
   const [recording, setRecording] = useState(false)
   const recRef = useRef<MediaRecorder | null>(null)
-  useEffect(() => () => { if (mediaUrl.startsWith('blob:')) URL.revokeObjectURL(mediaUrl) }, [mediaUrl])
-  function pickVideo(e: React.ChangeEvent<HTMLInputElement>) { const f = e.target.files?.[0]; if (!f) return; setMediaUrl((prev) => { if (prev.startsWith('blob:')) URL.revokeObjectURL(prev); return URL.createObjectURL(f) }); setKind('video'); onToast('15s video snippet attached') }
+  function pickVideo(e: React.ChangeEvent<HTMLInputElement>) { const f = e.target.files?.[0]; if (!f) return; setMediaUrl(URL.createObjectURL(f)); setKind('video'); onToast('15s video snippet attached') }
   async function record() {
     if (recording) { recRef.current?.stop(); return }
     try {
@@ -258,12 +409,12 @@ function BroadcastOverlay({ current, onSave, onClose, onToast }: { current: Stat
       const rec = new MediaRecorder(stream)
       const chunks: BlobPart[] = []
       rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data) }
-      rec.onstop = () => { const blob = new Blob(chunks, { type: 'audio/webm' }); setMediaUrl((prev) => { if (prev.startsWith('blob:')) URL.revokeObjectURL(prev); return URL.createObjectURL(blob) }); setKind('audio'); stream.getTracks().forEach((t) => t.stop()); setRecording(false); onToast('10s ambient loop captured') }
+      rec.onstop = () => { const blob = new Blob(chunks, { type: 'audio/webm' }); setMediaUrl(URL.createObjectURL(blob)); setKind('audio'); stream.getTracks().forEach((t) => t.stop()); setRecording(false); onToast('10s ambient loop captured') }
       recRef.current = rec; rec.start(); setKind('audio'); setRecording(true)
       window.setTimeout(() => { if (rec.state !== 'inactive') rec.stop() }, 10000)
     } catch { setKind('audio'); setMediaUrl(''); setRecording(false); onToast('Ambient loop captured · simulated') }
   }
-  function save() { const status: Status = { kind, text: text.trim() || undefined, mediaUrl: mediaUrl || undefined }; onSave(status); onToast('Living status sphere broadcast'); onClose() }
+  function save() { onSave({ kind, text: text.trim() || undefined, mediaUrl: mediaUrl || undefined }); onClose() }
   return (
     <div className="broadcast-overlay" onClick={onClose}>
       <div className="broadcast-sheet" onClick={(e) => e.stopPropagation()}>
@@ -336,7 +487,7 @@ function useMicLevel(active: boolean, muted: boolean) {
   return muted ? 0 : level
 }
 
-/* Pillar — VisionOS-inspired cinematic call spheres: spatial video · voice filaments · emoji privacy face */
+/* VisionOS-inspired cinematic call spheres: spatial video · voice filaments · emoji privacy face */
 function CallOverlay({ session, avatar, onClose, onToast }: { session: { contact: Contact; mode: CallMode }; avatar: Avatar; onClose: () => void; onToast: (text: string) => void }) {
   const [mode, setMode] = useState<CallMode>(session.mode)
   const [muted, setMuted] = useState(false)
@@ -395,89 +546,323 @@ function CallOverlay({ session, avatar, onClose, onToast }: { session: { contact
   )
 }
 
-function Chat({ contact, avatar, onBack, onProfile, onToast, onStartCall }: { contact: Contact; avatar: Avatar; onBack: () => void; onProfile: () => void; onToast: (text: string) => void; onStartCall: (mode: CallMode) => void }) {
+function Chat({ me, contact, avatar, messages, peerWatching, peerTyping, onBack, onProfile, onToast, onStartCall, onSend, onTyping }: { me: Me; contact: Contact; avatar: Avatar; messages: Msg[]; peerWatching: boolean; peerTyping: boolean; onBack: () => void; onProfile: () => void; onToast: (text: string) => void; onStartCall: (mode: CallMode) => void; onSend: (payload: { kind: 'text' | 'payment'; body?: string; amount?: number }) => Promise<void>; onTyping: () => void }) {
   const [draft, setDraft] = useState('')
-  const [messages, setMessages] = useState<Message[]>([
-    { id: 1, mine: false, kind: 'text', text: 'Good morning. I left a little space here for you.', time: '09:40' },
-    { id: 2, mine: true, kind: 'text', text: 'I like that. Let’s make today feel intentional.', time: '09:41 · Sent' },
-  ])
   const [payOpen, setPayOpen] = useState(false)
   const [amount, setAmount] = useState(25)
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [mood, setMood] = useState<{ mood: Mood; char: string } | null>(null)
-  const [peerWatching, setPeerWatching] = useState(false)
+  const endRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => { if (!mood) return; const t = window.setTimeout(() => setMood(null), 1500); return () => window.clearTimeout(t) }, [mood])
-  useEffect(() => { let t: number; const cycle = () => { setPeerWatching((w) => !w); t = window.setTimeout(cycle, 4200 + Math.random() * 4200) }; t = window.setTimeout(cycle, 2600); return () => window.clearTimeout(t) }, [contact.id])
-  function submit(e: FormEvent) { e.preventDefault(); const message = draft.trim(); if (!message) return; setMessages((current) => [...current, { id: Date.now(), mine: true, kind: 'text', text: message, time: '09:41 · Sent' }]); setDraft('') }
-  function sendFunds() { setMessages((current) => [...current, { id: Date.now(), mine: true, kind: 'payment', amount, time: '09:41 · Sent' }]); setPayOpen(false); onToast(`Sent $${amount.toFixed(2)}`) }
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages.length, peerTyping])
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    if ((e.nativeEvent as unknown as { isComposing?: boolean }).isComposing) return
+    const body = draft.trim()
+    if (!body) return
+    setDraft('')
+    await onSend({ kind: 'text', body })
+  }
+  async function sendFunds() { setPayOpen(false); await onSend({ kind: 'payment', amount }); onToast(`Sent $${amount.toFixed(2)}`) }
   function pickEmoji(e: { char: string; label: string; mood: Mood }) { setDraft((d) => d + e.char); setMood({ mood: e.mood, char: e.char }); playTone(e.mood) }
-  return <main className="messenger-shell chat-shell"><header className={`chat-header ${peerWatching ? 'peer-watching' : ''}`}><Tap className="nav-icon" onClick={onBack} aria-label="Back"><ArrowLeft /></Tap><span className={`chat-avatar ${contact.online ? 'online' : ''} ${contact.status ? 'status-ring' : ''}`}>{contact.emoji}</span><div className="chat-title"><b>{contact.name}</b><small className={peerWatching ? 'copresence' : ''}>{peerWatching ? <><Eye /> looking at this room now</> : contact.online ? 'online now' : 'last seen recently'}</small></div><div className="header-actions"><Tap className="nav-icon" onClick={() => onStartCall('audio')} aria-label="Start voice call"><Phone /></Tap><Tap className="nav-icon" onClick={() => onStartCall('video')} aria-label="Start video call"><Video /></Tap><Tap className="nav-icon avatar-slot" onClick={onProfile} aria-label="Open profile"><AvatarMedia avatar={avatar} fallback={<MoreHorizontal />} /></Tap></div></header><div className="chat-transcript"><div className="date-stamp"><span /> TODAY <span /></div>{messages.map((message) => message.kind === 'payment'
-    ? <div className={`chat-message payment ${message.mine ? 'mine' : ''}`} key={message.id}><div className="payment-card"><div className="payment-glow" /><div className="payment-head"><span className="payment-badge"><DollarSign /></span><div><small>NEXUS PAYMENT</small><b>${message.amount.toFixed(2)}</b></div></div><span className="payment-status"><Check /> Funds sent · settled instantly</span></div><small>{message.time}</small></div>
-    : <div className={`chat-message ${message.mine ? 'mine' : ''}`} key={message.id}><p>{message.text}</p><small>{message.time}</small></div>)}<div className="typing"><span /> {contact.name} is in the room</div></div><div className="chat-composer-wrap">
-    <div className={`pay-module ${payOpen ? 'open' : ''}`}>
-      <div className="pay-head"><span>SEND FUNDS</span><b>${amount.toFixed(2)}</b></div>
-      <input className="pay-slider" type="range" min={1} max={500} step={1} value={amount} onChange={(e) => setAmount(Number(e.target.value))} aria-label="Amount to send" />
-      <div className="pay-scale"><small>$1</small><small>$500</small></div>
-      <Tap className="pay-send" onClick={sendFunds}><Wallet /> Send Funds</Tap>
-    </div>
-    <EmojiDrawer open={emojiOpen} onPick={pickEmoji} onClose={() => setEmojiOpen(false)} />
-    <div className="chat-tools"><Tap aria-label="Attach file"><Paperclip /></Tap><Tap className={`emoji-toggle ${emojiOpen ? 'active' : ''}`} onClick={() => setEmojiOpen((v) => !v)} aria-label="Open violet emoji palette"><Smile /></Tap><Tap className={`money-toggle ${payOpen ? 'active' : ''}`} onClick={() => setPayOpen(!payOpen)} aria-label="Open send funds panel"><DollarSign /></Tap><span>Private message</span><Tap onClick={() => onStartCall('emoji')} aria-label="Start emoji privacy call"><Sparkles /></Tap></div><form className={`chat-composer ${peerWatching ? 'peer-watching' : ''}`} onSubmit={submit}><input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Say something true..." /><Tap className="send-orb" aria-label="Send message"><ArrowUp /></Tap></form><small className="composer-note">End-to-end encrypted · ephemeral by default</small></div>
-    {mood && <div className={`mood-fx mood-${mood.mood}`} aria-hidden><span className="mood-emoji">{mood.char}</span>{mood.mood === 'shock' ? <span className="ahh-ripple"><span className="ahh-label">Ahh</span></span> : <div className="mood-voice"><span className="mv-bars"><i /><i /><i /><i /></span>{moodVoice[mood.mood]}</div>}</div>}
-  </main>
+
+  return (
+    <main className="messenger-shell chat-shell">
+      <header className={`chat-header ${peerWatching ? 'peer-watching' : ''}`}>
+        <Tap className="nav-icon" onClick={onBack} aria-label="Back"><ArrowLeft /></Tap>
+        <span className={`chat-avatar ${contact.online ? 'online' : ''} ${contact.status ? 'status-ring' : ''}`}>{contact.emoji}</span>
+        <div className="chat-title">
+          <b>{contact.name}</b>
+          <small className={peerWatching ? 'copresence' : ''}>{peerWatching ? <><Eye /> looking at this room now</> : contact.online ? 'online now' : 'last seen recently'}</small>
+        </div>
+        <div className="header-actions">
+          <Tap className="nav-icon" onClick={() => onStartCall('audio')} aria-label="Start voice call"><Phone /></Tap>
+          <Tap className="nav-icon" onClick={() => onStartCall('video')} aria-label="Start video call"><Video /></Tap>
+          <Tap className="nav-icon avatar-slot" onClick={onProfile} aria-label="Open profile"><AvatarMedia avatar={avatar} fallback={<MoreHorizontal />} /></Tap>
+        </div>
+      </header>
+
+      <div className="chat-transcript">
+        <div className="date-stamp"><span /> TODAY <span /></div>
+        {messages.length === 0 && <p className="empty-room">This room is new. Say something true.</p>}
+        {messages.map((m) => {
+          const mine = m.senderId === me.id
+          const stamp = `${clock(m.createdAt)}${mine ? ' · Sent' : ''}`
+          if (m.kind === 'payment') return (
+            <div className={`chat-message payment ${mine ? 'mine' : ''}`} key={m.id}>
+              <div className="payment-card"><div className="payment-glow" /><div className="payment-head"><span className="payment-badge"><DollarSign /></span><div><small>NEXUS PAYMENT</small><b>${Number(m.amount ?? 0).toFixed(2)}</b></div></div><span className="payment-status"><Check /> {mine ? 'Funds sent · settled instantly' : 'Funds received · settled instantly'}</span></div>
+              <small>{stamp}</small>
+            </div>
+          )
+          return <div className={`chat-message ${mine ? 'mine' : ''}`} key={m.id}><p>{m.body}</p><small>{stamp}</small></div>
+        })}
+        {peerTyping && <div className="typing"><span /> {contact.name} is in the room</div>}
+        <div ref={endRef} />
+      </div>
+
+      <div className="chat-composer-wrap">
+        <div className={`pay-module ${payOpen ? 'open' : ''}`}>
+          <div className="pay-head"><span>SEND FUNDS</span><b>${amount.toFixed(2)}</b></div>
+          <input className="pay-slider" type="range" min={1} max={500} step={1} value={amount} onChange={(e) => setAmount(Number(e.target.value))} aria-label="Amount to send" />
+          <div className="pay-scale"><small>$1</small><small>$500</small></div>
+          <Tap className="pay-send" onClick={sendFunds}><Wallet /> Send Funds</Tap>
+        </div>
+        <EmojiDrawer open={emojiOpen} onPick={pickEmoji} onClose={() => setEmojiOpen(false)} />
+        <div className="chat-tools">
+          <Tap aria-label="Attach file"><Paperclip /></Tap>
+          <Tap className={`emoji-toggle ${emojiOpen ? 'active' : ''}`} onClick={() => setEmojiOpen((v) => !v)} aria-label="Open violet emoji palette"><Smile /></Tap>
+          <Tap className={`money-toggle ${payOpen ? 'active' : ''}`} onClick={() => setPayOpen(!payOpen)} aria-label="Open send funds panel"><DollarSign /></Tap>
+          <span>Private message</span>
+          <Tap onClick={() => onStartCall('emoji')} aria-label="Start emoji privacy call"><Sparkles /></Tap>
+        </div>
+        <form className={`chat-composer ${peerWatching ? 'peer-watching' : ''}`} onSubmit={submit}>
+          <input value={draft} onChange={(e) => { setDraft(e.target.value); onTyping() }} placeholder="Say something true..." />
+          <Tap className="send-orb" aria-label="Send message"><ArrowUp /></Tap>
+        </form>
+        <small className="composer-note">Live on the Nexus grid · delivered instantly</small>
+      </div>
+
+      {mood && <div className={`mood-fx mood-${mood.mood}`} aria-hidden><span className="mood-emoji">{mood.char}</span>{mood.mood === 'shock' ? <span className="ahh-ripple"><span className="ahh-label">Ahh</span></span> : <div className="mood-voice"><span className="mv-bars"><i /><i /><i /><i /></span>{moodVoice[mood.mood]}</div>}</div>}
+    </main>
+  )
 }
 
 export default function Page() {
-  const [view, setView] = useState<View>('ONBOARDING')
+  const supabase = useMemo(() => createClient(), [])
+  const [booted, setBooted] = useState(false)
+  const [me, setMe] = useState<Me | null>(null)
+  const [view, setView] = useState<View>('CHAT_LIST')
   const [selected, setSelected] = useState<Contact | null>(null)
   const [avatar, setAvatar] = useState<Avatar>(null)
   const [toast, setToast] = useState('')
-  const [contacts, setContacts] = useState<Contact[]>(initialContacts)
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const [messages, setMessages] = useState<Msg[]>([])
   const [freshId, setFreshId] = useState<string | null>(null)
   const [myStatus, setMyStatus] = useState<Status | null>(null)
   const [statusOverlay, setStatusOverlay] = useState<StatusOverlay>(null)
-  const [handle, setHandle] = useState('')
   const [discovering, setDiscovering] = useState<string | null>(null)
   const [call, setCall] = useState<CallSession>(null)
+  const [onlineIds, setOnlineIds] = useState<string[]>([])
+  const [watchers, setWatchers] = useState<string[]>([])
+  const [typingFrom, setTypingFrom] = useState<string | null>(null)
+  const [unread, setUnread] = useState<Record<string, number>>({})
+
+  const presenceRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
+  const roomRef = useRef<string | null>(null)
+  const typingTimer = useRef<number>(0)
+
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(''), 2200); return () => window.clearTimeout(timer) }, [toast])
-  function showToast(text: string) { setToast(text) }
-  function discoverFriend(query: string) {
-    const clean = query.trim().replace(/^@/, '').toLowerCase().replace(/[^a-z0-9._]/g, '')
-    if (!clean || discovering) return
-    setDiscovering(clean)
-    window.setTimeout(() => {
-      const name = clean.split(/[._\s]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(' ') || 'New Peer'
-      const id = `f-${Date.now()}`
-      setContacts((prev) => [{ id, name, alias: `@${clean}`, snippet: 'Handshake complete · secure key verified', time: 'now', online: true, emoji: (clean[0] || 'N').toUpperCase() }, ...prev])
-      setFreshId(id); setDiscovering(null); showToast(`@${clean} joined your grid`)
-      window.setTimeout(() => setFreshId((cur) => (cur === id ? null : cur)), 1500)
-    }, 1900)
+  const showToast = useCallback((text: string) => setToast(text), [])
+
+  /* ---------- identity ---------- */
+  useEffect(() => {
+    let alive = true
+    async function resolve(userId: string | undefined) {
+      if (!userId) { if (alive) { setMe(null); setBooted(true) } return }
+      const { data } = await supabase.from('profiles').select('id, handle, display_name, wallet_address').eq('id', userId).maybeSingle()
+      if (!alive) return
+      if (data) setMe({ id: data.id, handle: data.handle, displayName: data.display_name || data.handle, wallet: data.wallet_address })
+      setBooted(true)
+    }
+    supabase.auth.getSession().then(({ data }: { data: { session: { user: { id: string } } | null } }) => resolve(data.session?.user.id))
+    const { data: sub } = supabase.auth.onAuthStateChange((_event: string, session: { user: { id: string } } | null) => { resolve(session?.user.id) })
+    return () => { alive = false; sub.subscription.unsubscribe() }
+  }, [supabase])
+
+  /* ---------- directory + transcript ---------- */
+  const loadGrid = useCallback(async (self: Me) => {
+    const [{ data: links }, { data: msgs }] = await Promise.all([
+      supabase.from('contacts').select('contact_id').eq('owner_id', self.id),
+      supabase.from('messages').select('id, sender_id, recipient_id, kind, body, amount, created_at').or(`sender_id.eq.${self.id},recipient_id.eq.${self.id}`).order('created_at', { ascending: true }).limit(500),
+    ])
+
+    const rows: Msg[] = ((msgs ?? []) as Row[]).map((m) => ({ id: m.id, senderId: m.sender_id, recipientId: m.recipient_id, kind: m.kind, body: m.body, amount: m.amount, createdAt: m.created_at }))
+    setMessages(rows)
+
+    const peerIds = new Set<string>(((links ?? []) as Row[]).map((l) => l.contact_id as string))
+    rows.forEach((m) => { peerIds.add(m.senderId === self.id ? m.recipientId : m.senderId) })
+    peerIds.delete(self.id)
+    if (peerIds.size === 0) { setContacts([]); return }
+
+    const ids = [...peerIds]
+    const [{ data: profiles }, { data: statuses }] = await Promise.all([
+      supabase.from('profiles').select('id, handle, display_name, last_seen').in('id', ids),
+      supabase.from('statuses').select('user_id, kind, body, media_url, created_at').in('user_id', [...ids, self.id]).gt('expires_at', new Date().toISOString()).order('created_at', { ascending: false }),
+    ])
+
+    const statusFor = new Map<string, Status>()
+    ;((statuses ?? []) as Row[]).forEach((s) => { if (!statusFor.has(s.user_id)) statusFor.set(s.user_id, { kind: s.kind, text: s.body || undefined, mediaUrl: s.media_url || undefined }) })
+    const mine = statusFor.get(self.id)
+    if (mine) setMyStatus((prev) => prev ?? mine)
+
+    const list: Contact[] = ((profiles ?? []) as Row[]).map((p) => {
+      const thread = rows.filter((m) => m.senderId === p.id || m.recipientId === p.id)
+      const last = thread[thread.length - 1]
+      return {
+        id: p.id,
+        name: p.display_name || p.handle,
+        alias: `@${p.handle}`,
+        snippet: last ? (last.kind === 'payment' ? `Payment · $${Number(last.amount ?? 0).toFixed(2)}` : last.body) : 'Key linked · say hello',
+        time: last ? relative(last.createdAt) : 'new',
+        online: false,
+        emoji: initial(p.display_name || p.handle),
+        status: statusFor.get(p.id),
+      }
+    })
+    list.sort((a, b) => (a.time === 'new' ? 1 : 0) - (b.time === 'new' ? 1 : 0))
+    setContacts(list)
+  }, [supabase])
+
+  useEffect(() => { if (me) loadGrid(me) }, [me, loadGrid])
+
+  /* ---------- realtime messages ---------- */
+  useEffect(() => {
+    if (!me) return
+    const channel = supabase
+      .channel('nexus-messages')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, ({ new: row }: { new: Record<string, string> }) => {
+        const r = row as Record<string, string>
+        if (r.sender_id !== me.id && r.recipient_id !== me.id) return
+        const msg: Msg = { id: r.id, senderId: r.sender_id, recipientId: r.recipient_id, kind: r.kind as Msg['kind'], body: r.body, amount: r.amount ? Number(r.amount) : null, createdAt: r.created_at }
+        setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]))
+        const peer = msg.senderId === me.id ? msg.recipientId : msg.senderId
+        setContacts((prev) => {
+          const known = prev.some((c) => c.id === peer)
+          if (!known) { loadGrid(me); return prev }
+          return prev.map((c) => c.id === peer ? { ...c, snippet: msg.kind === 'payment' ? `Payment · $${Number(msg.amount ?? 0).toFixed(2)}` : msg.body, time: 'now' } : c)
+        })
+        if (msg.senderId !== me.id && roomRef.current !== msg.senderId) {
+          setUnread((prev) => ({ ...prev, [msg.senderId]: (prev[msg.senderId] ?? 0) + 1 }))
+        }
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [me, supabase, loadGrid])
+
+  /* ---------- presence + typing ---------- */
+  useEffect(() => {
+    if (!me) return
+    const channel = supabase.channel('nexus-presence', { config: { presence: { key: me.id } } })
+    channel
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState() as Record<string, { room: string | null }[]>
+        const ids = Object.keys(state)
+        setOnlineIds(ids)
+        setWatchers(ids.filter((id) => id !== me.id && state[id]?.some((p: { room: string | null }) => p.room === me.id)))
+      })
+      .on('broadcast', { event: 'typing' }, ({ payload }: { payload: { from: string; to: string } }) => {
+        const from = (payload as { from: string; to: string }).from
+        if ((payload as { to: string }).to !== me.id) return
+        setTypingFrom(from)
+        window.setTimeout(() => setTypingFrom((cur) => (cur === from ? null : cur)), 2600)
+      })
+      .subscribe((status: string) => { if (status === 'SUBSCRIBED') channel.track({ room: roomRef.current }) })
+    presenceRef.current = channel
+    return () => { presenceRef.current = null; supabase.removeChannel(channel) }
+  }, [me, supabase])
+
+  const enterRoom = useCallback((peerId: string | null) => {
+    roomRef.current = peerId
+    presenceRef.current?.track({ room: peerId })
+  }, [])
+
+  function signalTyping() {
+    if (!me || !selected) return
+    const now = Date.now()
+    if (now - typingTimer.current < 1200) return
+    typingTimer.current = now
+    presenceRef.current?.send({ type: 'broadcast', event: 'typing', payload: { from: me.id, to: selected.id } })
   }
+
+  /* ---------- actions ---------- */
+  const linkHandle = useCallback(async (raw: string) => {
+    if (!me) return
+    const clean = cleanHandle(raw)
+    if (!clean) return
+    if (clean === me.handle) { showToast('That is your own key'); return }
+    setDiscovering(clean)
+    const { data: profile } = await supabase.from('profiles').select('id, handle, display_name').eq('handle', clean).maybeSingle()
+    if (!profile) { setDiscovering(null); showToast(`No @${clean} on the grid yet`); return }
+    const { error } = await supabase.from('contacts').insert({ owner_id: me.id, contact_id: profile.id })
+    setDiscovering(null)
+    if (error && !/duplicate|unique/i.test(error.message)) { showToast('Handshake failed'); return }
+    setFreshId(profile.id)
+    showToast(error ? `@${clean} is already linked` : `@${clean} joined your grid`)
+    window.setTimeout(() => setFreshId((cur) => (cur === profile.id ? null : cur)), 1600)
+    await loadGrid(me)
+  }, [me, supabase, showToast, loadGrid])
+
+  const sendMessage = useCallback(async (payload: { kind: 'text' | 'payment'; body?: string; amount?: number }) => {
+    if (!me || !selected) return
+    const optimistic: Msg = { id: `local-${Date.now()}`, senderId: me.id, recipientId: selected.id, kind: payload.kind, body: payload.body ?? '', amount: payload.amount ?? null, createdAt: new Date().toISOString() }
+    setMessages((prev) => [...prev, optimistic])
+    const { data, error } = await supabase.from('messages').insert({ sender_id: me.id, recipient_id: selected.id, kind: payload.kind, body: payload.body ?? '', amount: payload.amount ?? null }).select('id').single()
+    if (error) { setMessages((prev) => prev.filter((m) => m.id !== optimistic.id)); showToast('Message did not leave the device'); return }
+    setMessages((prev) => prev.map((m) => m.id === optimistic.id ? { ...m, id: data.id } : m))
+  }, [me, selected, supabase, showToast])
+
+  const saveStatus = useCallback(async (status: Status) => {
+    if (!me) return
+    setMyStatus(status)
+    await supabase.from('statuses').insert({ user_id: me.id, kind: status.kind, body: status.text ?? '', media_url: null })
+    showToast('Living status sphere broadcast')
+  }, [me, supabase, showToast])
+
   function quickStatus(file: File) {
     const isVideo = file.type.startsWith('video/')
-    setMyStatus((prev) => { if (prev?.mediaUrl?.startsWith('blob:')) URL.revokeObjectURL(prev.mediaUrl); return { kind: isVideo ? 'video' : 'image', mediaUrl: URL.createObjectURL(file) } })
-    showToast(isVideo ? 'Living video sphere is live' : 'Living photo sphere is live')
+    saveStatus({ kind: isVideo ? 'video' : 'image', mediaUrl: URL.createObjectURL(file) })
   }
-  const selfContact: Contact = { id: 'me', name: handle ? `@${handle}` : 'You', alias: handle ? `@${handle}` : '@you', snippet: '', time: 'now', online: true, emoji: (handle[0] || 'Y').toUpperCase(), status: myStatus ?? undefined }
-  function addFriend() {
-    const pick = friendPool[Math.floor(Math.random() * friendPool.length)]
-    const id = `f-${Date.now()}`
-    setContacts((prev) => [{ id, online: true, time: 'now', ...pick }, ...prev])
-    setFreshId(id)
-    showToast('Friend key verified · added to network')
-    window.setTimeout(() => setFreshId((cur) => (cur === id ? null : cur)), 1500)
+
+  async function signOut() { await supabase.auth.signOut(); setMe(null); setContacts([]); setMessages([]); setView('CHAT_LIST'); setSelected(null) }
+
+  if (!booted) return <div className="app-canvas boot"><div className="gateway-art"><div className="gateway-ring" /><div className="gateway-mark"><Mark /></div></div><p className="boot-note">Opening your identity capsule…</p></div>
+  if (!me) return <div className="app-canvas"><Gateway /></div>
+
+  const decorated = contacts.map((c) => ({ ...c, online: onlineIds.includes(c.id) }))
+  const selfContact: Contact = { id: me.id, name: `@${me.handle}`, alias: `@${me.handle}`, snippet: '', time: 'now', online: true, emoji: initial(me.handle), status: myStatus ?? undefined }
+  const activeContact = selected ? (decorated.find((c) => c.id === selected.id) ?? selected) : null
+  const thread = activeContact ? messages.filter((m) => m.senderId === activeContact.id || m.recipientId === activeContact.id) : []
+
+  function openChat(contact: Contact) {
+    setSelected(contact); setView('ACTIVE_CHAT'); enterRoom(contact.id)
+    setUnread((prev) => { const next = { ...prev }; delete next[contact.id]; return next })
   }
-  const directoryProps = { avatar, contacts, freshId, myStatus, discovering, onSelect: (contact: Contact) => { setSelected(contact); setView('ACTIVE_CHAT') }, onProfile: () => setView('PROFILE_MENU'), onBroadcast: () => setStatusOverlay({ mode: 'broadcast' }), onOpenStatus: (contact: Contact) => setStatusOverlay({ mode: 'player', contact }), onOpenMyStatus: () => { if (myStatus) setStatusOverlay({ mode: 'player', contact: selfContact }) }, onDiscover: discoverFriend, onQuickStatus: quickStatus }
-  function startCall(mode: CallMode) { if (selected) setCall({ contact: selected, mode }) }
+  function leaveChat() { setView('CHAT_LIST'); setSelected(null); enterRoom(null) }
+
   return <div className="app-canvas">
     <div className="view-stage" key={view === 'PROFILE_MENU' ? (selected ? 'ACTIVE_CHAT' : 'CHAT_LIST') : view}>
-      {view === 'ONBOARDING' && <Gateway handle={handle} setHandle={setHandle} onEnter={() => setView('CHAT_LIST')} onAddFriend={addFriend} />}
-      {view === 'CHAT_LIST' && <Directory {...directoryProps} />}
-      {view === 'ACTIVE_CHAT' && selected && <Chat contact={selected} avatar={avatar} onBack={() => setView('CHAT_LIST')} onProfile={() => setView('PROFILE_MENU')} onToast={showToast} onStartCall={startCall} />}
-      {view === 'PROFILE_MENU' && (selected ? <Chat contact={selected} avatar={avatar} onBack={() => setView('CHAT_LIST')} onProfile={() => setView('PROFILE_MENU')} onToast={showToast} onStartCall={startCall} /> : <Directory {...directoryProps} />)}
+      {(view === 'CHAT_LIST' || (view === 'PROFILE_MENU' && !selected)) && (
+        <Directory
+          me={me} avatar={avatar} contacts={decorated} freshId={freshId} myStatus={myStatus} discovering={discovering} unread={unread}
+          onSelect={openChat}
+          onProfile={() => setView('PROFILE_MENU')}
+          onBroadcast={() => setStatusOverlay({ mode: 'broadcast' })}
+          onOpenStatus={(contact) => setStatusOverlay({ mode: 'player', contact })}
+          onOpenMyStatus={() => { if (myStatus) setStatusOverlay({ mode: 'player', contact: selfContact }) }}
+          onDiscover={linkHandle}
+          onQuickStatus={quickStatus}
+          onLink={linkHandle}
+        />
+      )}
+      {(view === 'ACTIVE_CHAT' || (view === 'PROFILE_MENU' && selected)) && activeContact && (
+        <Chat
+          me={me} contact={activeContact} avatar={avatar} messages={thread}
+          peerWatching={watchers.includes(activeContact.id)}
+          peerTyping={typingFrom === activeContact.id}
+          onBack={leaveChat}
+          onProfile={() => setView('PROFILE_MENU')}
+          onToast={showToast}
+          onStartCall={(mode) => setCall({ contact: activeContact, mode })}
+          onSend={sendMessage}
+          onTyping={signalTyping}
+        />
+      )}
     </div>
-    {view === 'PROFILE_MENU' && <ProfileDrawer avatar={avatar} setAvatar={setAvatar} onClose={() => setView(selected ? 'ACTIVE_CHAT' : 'CHAT_LIST')} onToast={showToast} onAddFriend={addFriend} />}
-    {statusOverlay?.mode === 'broadcast' && <BroadcastOverlay current={myStatus} onSave={setMyStatus} onClose={() => setStatusOverlay(null)} onToast={showToast} />}
-    {statusOverlay?.mode === 'player' && <StatusSphere subject={statusOverlay.contact} onClose={() => setStatusOverlay(null)} />}
+
+    {view === 'PROFILE_MENU' && <ProfileDrawer me={me} avatar={avatar} setAvatar={setAvatar} onClose={() => setView(selected ? 'ACTIVE_CHAT' : 'CHAT_LIST')} onToast={showToast} onLink={linkHandle} onSignOut={signOut} />}
+    {statusOverlay?.mode === 'broadcast' && <BroadcastOverlay current={myStatus} onSave={saveStatus} onClose={() => setStatusOverlay(null)} onToast={showToast} />}
+    {statusOverlay?.mode === 'player' && statusOverlay.contact.status && <StatusSphere subject={statusOverlay.contact} onClose={() => setStatusOverlay(null)} />}
     {call && <CallOverlay session={call} avatar={avatar} onClose={() => setCall(null)} onToast={showToast} />}
     {toast && <Toast text={toast} />}
   </div>
